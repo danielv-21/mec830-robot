@@ -54,8 +54,8 @@ void turnLeft(){
 }
 
 void defaultMotion(){
-  myServo.write(90);
-  forward();
+  myServo.write(90);              // ultrasonic sensor facing front
+  forward();                      // car moves forward
 }
 
 void setup() {
@@ -71,43 +71,54 @@ void setup() {
   
   Serial.begin(9600);
   myServo.attach(servopin);       // initialize servo
+
+  defaultMotion();                // move forward with ultrasonic sensor facing front, no sweeping
+  cm = sonar.ping_cm();
+
+  while(cm > 15){
+    defaultMotion();                // move forward with ultrasonic sensor facing front, no sweeping
+    cm = sonar.ping_cm();           // ultrasonic sensor checks for obstacle
+  }
+
+  stop();                           // stop for 50ms when obstacle detected
+  delay(50);
+  turnLeft();
+  delay(600);
+  stop();
+  count++;
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-  defaultMotion();
-  cm = sonar.ping_cm();
 
-  if (cm <= 10){
-    stop();
-    delay(50);
-    turnLeft();
-    delay(600);
-    stop();
-    count++;
-
-    switch (count){
-      case 1:
-        //start sweeping 90 deg right to front
-
-        int cmArray[91];
-        for (i=0; i<=90;i++){
-          myServo.write(i);
-          cmArray[i] = sonar.ping_cm();
-          delay(10);
-        }
-
+  switch (count){
+    case 1:
+      // Sweep 90 deg right to front to read distance
+      int cmArray[91];
+      for (i=0; i<=90;i++){
+        myServo.write(i);
+        cmArray[i] = sonar.ping_cm();
+        delay(10);
+        
         if (cmArray[0] <= 10){
-          forward();
-          delay(500);
+          count = 2;
         }
-        else if (cmArray[0] > 10){
-          turnRight();
-          delay(600);
-          count++;
+        else if (cmArray[0] > 20){
+          count = 3;
         }
         
-    }
+      }
+    case 2:
+      // after case 1, move forward for 10cm
+      defaultMotion();
+      delay(1000);                    // not exactly 10cm, need to modify
+      stop();
+      count = 1;
+    case 3:
+      // if obstacle detected, turn right
+      turnRight();
+      delay(600);
+      count = 1;
   }
   
 
