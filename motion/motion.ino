@@ -10,12 +10,16 @@ void forward(){
   digitalWrite(STBY,HIGH);
   digitalWrite(AIN1,HIGH);
   digitalWrite(BIN1,HIGH);
+  analogWrite(PWMA, 50);
+  analogWrite(PWMB, 50);
 }
 
 void backward(){
   digitalWrite(STBY,HIGH);
   digitalWrite(AIN1,LOW);
   digitalWrite(BIN1,LOW); 
+  analogWrite(PWMA, 50);
+  analogWrite(PWMB, 50);
 }
 
 void stop(){
@@ -26,12 +30,16 @@ void turnRight(){
   digitalWrite(STBY,HIGH);
   digitalWrite(AIN1,HIGH);
   digitalWrite(BIN1,LOW);
+  analogWrite(PWMA, 50);
+  analogWrite(PWMB, 50);
 }
 
 void turnLeft(){
   digitalWrite(STBY,HIGH);
   digitalWrite(AIN1,LOW);
   digitalWrite(BIN1,HIGH);
+  analogWrite(PWMA, 50);
+  analogWrite(PWMB, 50);
 }
 
 /*****MAIN PROGRAM*****/
