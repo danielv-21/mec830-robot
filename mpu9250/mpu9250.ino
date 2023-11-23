@@ -2,14 +2,14 @@
 
 MPU9250 mpu;
 
-float initAngle;
+float refAngle;
 float yawAngle;
-float input;
+float relAngle;
 
 void setup() {
   Serial.begin(115200);
   Wire.begin();
-  delay(2000);
+  delay(2000);  
 
   if (!mpu.setup(0x68)) {  // change to your own address
       while (1) {
@@ -20,21 +20,23 @@ void setup() {
 }
 
 void loop() {
+  measureRelAngle();
+}
+
+float measureRelAngle(){
   if (mpu.update()) {
     static uint32_t prev_ms = millis();
     if (millis() > prev_ms + 25) {
-      Serial.print("Yaw: ");
       yawAngle = mpu.getYaw();
-      Serial.print(yawAngle,2);
-      Serial.print(" - prev_ms: ");
       prev_ms = millis();
-      Serial.println(prev_ms);
 
-      if (prev_ms > 15000 && prev_ms < 15100){
-        initAngle = yawAngle;
-        Serial.print("Initial Angle: ");
-        Serial.print(yawAngle,2);
+      if (prev_ms > 15000 && prev_ms < 15100){          // wait for 15s to save initial angle
+        refAngle = yawAngle;
       }
+
+      relAngle = refAngle - yawAngle;
+      Serial.print("Relative Angle ");
+      Serial.println(relAngle, 2);
     }
   }
 }
