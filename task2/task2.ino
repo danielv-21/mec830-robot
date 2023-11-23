@@ -3,13 +3,29 @@
 #include <Wire.h>
 
 /*****MPU9250*****/
+const int MPU = 0x68; // MPU6050 I2C address
+float AccX, AccY, AccZ; //linear acceleration
+float GyroX, GyroY, GyroZ; //angular velocity
+float accAngleX, accAngleY, gyroAngleX, gyroAngleY, gyroAngleZ; //used in void loop()
+float roll, pitch, yaw;
+float AccErrorX, AccErrorY, GyroErrorX, GyroErrorY, GyroErrorZ;
+float elapsedTime, currentTime, previousTime;
+int c = 0;
+
+float AngleRoll, AnglePitch;
 float RateRoll, RatePitch, RateYaw;
+
 float RateCalibrationRoll,RateCalibrationPitch, RateCalibrationYaw; 
 int RateCalibrationNumber;
-float AccX, AccY, AccZ;         //Define the accelerometer variables
-float AngleRoll, AnglePitch, AngleYaw;
-float Xoffset=+0.07, Yoffset=0, Zoffset=+0.06;
-float LoopTimer;
+
+float angle;
+
+/*****Kalman Filter*****/
+float KalmanAngleRoll = 0, KalmanUncertaintyAngleRoll = 2*2;          //Define the predicted angles and the uncertainties
+float KalmanAnglePitch = 0, KalmanUncertaintyAnglePitch = 2*2;
+
+float Kalman1DOutput[] = {0,0};         //Initialize the output of the filter {angle prediction, prediction undertainty}
+
 
 /*****Servo*****/
 Servo myServo;
@@ -22,7 +38,22 @@ int initpos = 90;
 #define echo 12
 #define max_distance 200
 
+float cm;
+
 NewPing sonar(trigger,echo,max_distance);
+
+//Create the function that calculates the predicted angle and uncertainty using the Kalman equations
+void kalman_1d(float KalmanState, float KalmanUncertainty, float KalmanInput, float KalmanMeasurement){
+  KalmanState = KalmanState + 0.004 * KalmanInput;
+  KalmanUncertainty = KalmanUncertainty + 0.004 * 0.008 * 4 * 4;
+
+  float KalmanGain = KalmanUncertainty * 1/(1*KalmanUncertainty + 3 * 3);
+  KalmanState = KalmanState + KalmanGain * (KalmanMeasurement - KalmanState);
+  KalmanUncertainty = (1-KalmanGain)*KalmanUncertainty;
+
+  Kalman1DOutput[0] = KalmanState;          //Kalman filter output
+  Kalman1DOutput[1] = KalmanUncertainty;
+}
 
 /*****Define pins used by motor driver*****/
 #define PWMA 5
@@ -84,18 +115,18 @@ void setup() {
   myServo.attach(servopin);
   myServo.write(initpos);
 
-  Wire.setClock(400000);          //Communication with the gyroscope and calibration 
-  Wire.begin();
-  delay(250);
-  Wire.beginTransmission(0x68);
-  Wire.write(0x6B);
-  Wire.write(0x00);
-  Wire.endTransmission();
+  Wire.begin();                      // Initialize comunication
+  Wire.beginTransmission(MPU);       // Start communication with MPU6050 // MPU=0x68
+  Wire.write(0x6B);                  // Talk to the register 6B
+  Wire.write(0x00);                  // Make reset - place a 0 into the 6B register
+  Wire.endTransmission(true);        //end the transmission
+  // Call this function if you need to get the IMU error values for your module
+  calculateError();
+  delay(20);
 
   for(RateCalibrationNumber = 0;
       RateCalibrationNumber < 2000;
       RateCalibrationNumber++){
-    gyro_signals();
     RateCalibrationRoll += RateRoll;
     RateCalibrationPitch += RatePitch;
     RateCalibrationYaw += RateYaw;
@@ -104,72 +135,154 @@ void setup() {
   RateCalibrationRoll /= 2000;
   RateCalibrationPitch /= 2000;
   RateCalibrationYaw /= 2000;
-  LoopTimer=micros();
+
+  currentTime = micros();
 }
+
+int count = 1;
 
 void loop() {
   // put your main code here, to run repeatedly:
-  gyro_signals();
+  // === Read accelerometer (on the MPU6050) data === //
+  readAcceleration();
+  // Calculating Roll and Pitch from the accelerometer data
+  accAngleX = (atan(AccY / sqrt(pow(AccX, 2) + pow(AccZ, 2))) * 180 / PI) - AccErrorX; //AccErrorX is calculated in the calculateError() function
+  accAngleY = (atan(-1 * AccX / sqrt(pow(AccY, 2) + pow(AccZ, 2))) * 180 / PI) - AccErrorY;
+  
+  // === Read gyroscope (on the MPU6050) data === //
+  previousTime = currentTime;
+  currentTime = micros();
+  elapsedTime = (currentTime - previousTime) / 1000000; // Divide by 1000 to get seconds
+  readGyro();
+  // Correct the outputs with the calculated error values
+  GyroX -= GyroErrorX; //GyroErrorX is calculated in the calculateError() function
+  GyroY -= GyroErrorY;
+  GyroZ -= GyroErrorZ;
+  // Currently the raw values are in degrees per seconds, deg/s, so we need to multiply by sendonds (s) to get the angle in degrees
+  gyroAngleX += GyroX * elapsedTime; // deg/s * s = deg
+  gyroAngleY += GyroY * elapsedTime;
+  yaw += GyroZ * elapsedTime;
+  //combine accelerometer- and gyro-estimated angle values. 0.96 and 0.04 values are determined through trial and error by other people
+  roll = 0.96 * gyroAngleX + 0.04 * accAngleX;
+  pitch = 0.96 * gyroAngleY + 0.04 * accAngleY;
+  angle = yaw; //if you mounted MPU6050 in a different orientation to me, angle may not = roll. It can roll, pitch, yaw or minus version of the three
+  //for me, turning right reduces angle. Turning left increases angle.
 
-//  Serial.print("Acceleration X [g]- ");         //Check the measured acceleration values
-//  Serial.print(AccX);
-//  Serial.print(" Acceleration Y [g]- ");
-//  Serial.print(AccY);
-//  Serial.print(" Acceleration Z [g]- ");
-//  Serial.println(AccZ);
+  //Start the iteration for the Kalman filter with the roll and pitch angles
+  kalman_1d(KalmanAngleRoll, KalmanUncertaintyAngleRoll, RateRoll, AngleRoll);
+  KalmanAngleRoll = Kalman1DOutput[0]+0.005;
+  KalmanUncertaintyAngleRoll = Kalman1DOutput[1];
 
-  Serial.print("Yaw angle [°]= ");         //Check the measured roll and pitch angles
-  Serial.print(AngleYaw);
-  Serial.print(" Roll angle [°]= ");         
-  Serial.print(AngleRoll);
-  Serial.print(" Pitch angle [°]= ");
-  Serial.println(AnglePitch);
+  kalman_1d(KalmanAnglePitch, KalmanUncertaintyAnglePitch, RatePitch, AnglePitch);
+  KalmanAnglePitch = Kalman1DOutput[0];
+  KalmanUncertaintyAnglePitch = Kalman1DOutput[1];
+
+  Serial.print("Yaw: ");
+  Serial.print(yaw);
+  
+  cm = sonar.ping_cm();
+  Serial.print(" - cm: ");
+  Serial.print(cm);
+
+  Serial.print(" - Count: ");
+  Serial.println(count);
+
+  switch (count){
+    case 1:   // p0 to p1
+      while (cm >= 15){
+        forward();
+      }
+      stop();
+      turnRight();
+      count = 2;
+      break;
+      
+//    case 2:   //turn right
+//      if (yaw >= -90){
+//        turnRight();
+//      }
+//      else if (cm < -90){
+//        stop();
+//        count = 3;
+//      }
+//    case 3:   //p1 to p2
+//      if (cm >= 15){
+//        forward();
+//      }
+//      else if (cm < 15){
+//        stop();
+//        count = 4;
+//      }
+//    case 4:   //turn left
+//      if (yaw <= 90){
+//        turnLeft();
+//      }
+//      else if (yaw > 90){
+//        stop();
+//        count = 5;
+//      }
+//    case 5:   //p2 to p3
+//      if (cm >= 15){
+//        forward();
+//      }
+//      else if (cm < 15){
+//        stop();
+//      }
+  }
+  
+
 }
 
-void gyro_signals(void){
-  Wire.beginTransmission(0x68);         //Switch on the low-pass filter
-  Wire.write(0x1A);
-  Wire.write(0x05);
-  Wire.endTransmission();
+void calculateError() {
+  //When this function is called, ensure the car is stationary. See Step 2 for more info
+  
+  // Read accelerometer values 200 times
+  c = 0;
+  while (c < 200) {
+    readAcceleration();
+    // Sum all readings
+    AccErrorX += (atan((AccY) / sqrt(pow((AccX), 2) + pow((AccZ), 2))) * 180 / PI);
+    AccErrorY += (atan(-1 * (AccX) / sqrt(pow((AccY), 2) + pow((AccZ), 2))) * 180 / PI);
+    c++;
+  }
+  //Divide the sum by 200 to get the error value, since expected value of reading is zero
+  AccErrorX = AccErrorX / 200;
+  AccErrorY = AccErrorY / 200;
+  c = 0;
+  
+  // Read gyro values 200 times
+  while (c < 200) {
+    readGyro();
+    // Sum all readings
+    GyroErrorX += GyroX;
+    GyroErrorY += GyroY;
+    GyroErrorZ += GyroZ;
+    c++;
+  }
+  //Divide the sum by 200 to get the error value
+  GyroErrorX = GyroErrorX / 200;
+  GyroErrorY = GyroErrorY / 200;
+  GyroErrorZ = GyroErrorZ / 200;
+  Serial.println("The the gryoscope setting in MPU6050 has been calibrated");
+}
 
-  Wire.beginTransmission(0x68);         //Configure the accelerometer output
-  Wire.write(0x1C);
-  Wire.write(0x10);
-  Wire.endTransmission();
+void readAcceleration() {
+  Wire.beginTransmission(MPU);
+  Wire.write(0x3B); // Start with register 0x3B (ACCEL_XOUT_H)
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU, 6, true); // Read 6 registers total, each axis value is stored in 2 registers
+  //For a range of +-2g, we need to divide the raw values by 16384, according to the MPU6050 datasheet
+  AccX = (Wire.read() << 8 | Wire.read()) / 16384.0; // X-axis value
+  AccY = (Wire.read() << 8 | Wire.read()) / 16384.0; // Y-axis value
+  AccZ = (Wire.read() << 8 | Wire.read()) / 16384.0; // Z-axis value
+}
 
-  Wire.beginTransmission(0x68);         //Pull the accelerometer measurements from the sensor
-  Wire.write(0x3B);
-  Wire.endTransmission();
-  Wire.requestFrom(0x68,6);
-  int16_t AccXLSB = Wire.read()<<8 | Wire.read();
-  int16_t AccYLSB = Wire.read()<<8 | Wire.read();
-  int16_t AccZLSB = Wire.read()<<8 | Wire.read();
-
-  Wire.beginTransmission(0x68);         //Configure the gyroscope output and pull rotation rate measurements from the sensor
-  Wire.write(0x1B);
-  Wire.write(0x8);
-  Wire.endTransmission();
-  Wire.beginTransmission(0x68);
+void readGyro() {
+  Wire.beginTransmission(MPU);
   Wire.write(0x43);
-  Wire.endTransmission();
-  Wire.requestFrom(0x68,6);
-  int16_t GyroX = Wire.read()<<8 | Wire.read();
-  int16_t GyroY = Wire.read()<<8 | Wire.read();
-  int16_t GyroZ = Wire.read()<<8 | Wire.read();
-  RateRoll = (float)GyroX/65.5;
-  RatePitch = (float)GyroY/65.5;
-  RateYaw = (float)GyroZ/65.5;
-
-  // x: right is -, left is +
-  // y: front is -, back is +
-  // z: up is -, down is +
-  AccX = (float)AccXLSB/4096+Xoffset;         //Convert the measurements to physical values
-  AccY = (float)AccYLSB/4096+Yoffset;         //Zero offset calibration can be done here
-  AccZ = (float)AccZLSB/4096+Zoffset;
-
-  //Calculate the absolute angles
-  AngleRoll = atan(AccY / sqrt(AccX*AccX + AccZ*AccZ)) * 1/(3.142/180);         
-  AnglePitch = atan(AccX / sqrt(AccY*AccY + AccZ*AccZ)) * 1/(3.142/180);
-  //AngleYaw = atan(sqrt(AccY*AccY + AccX*AccX) / AccZ) * 1/(3.142/180);
-  AngleYaw = atan(-AccX / sqrt(AccY*AccY + AccZ*AccZ)) * 1/(3.142/180);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU, 6, true);
+  GyroX = (Wire.read() << 8 | Wire.read()) / 131.0;
+  GyroY = (Wire.read() << 8 | Wire.read()) / 131.0;
+  GyroZ = (Wire.read() << 8 | Wire.read()) / 131.0;
 }
