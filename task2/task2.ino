@@ -1,19 +1,21 @@
 #include <NewPing.h>
-#include "MPU9250.h"
 #include <Servo.h>
+#include <Wire.h>
+
+/*****MPU9250*****/
+float RateRoll, RatePitch, RateYaw;
+float RateCalibrationRoll,RateCalibrationPitch, RateCalibrationYaw; 
+int RateCalibrationNumber;
+float AccX, AccY, AccZ;         //Define the accelerometer variables
+float AngleRoll, AnglePitch, AngleYaw;
+float Xoffset=+0.07, Yoffset=0, Zoffset=+0.06;
+float LoopTimer;
 
 /*****Servo*****/
 Servo myServo;
 
 int servopin = 11;
 int initpos = 90;
-
-/*****MPU9250*****/
-MPU9250 mpu;
-
-float refAngle;
-float yawAngle;
-float relAngle;
 
 /*****Define ultrasonic sensor pins*****/
 #define trigger 13
@@ -66,9 +68,6 @@ void turnLeft(){
   analogWrite(PWMB, 50);
 }
 
-int count = 1;
-float cm;
-
 /*****MAIN PROGRAM*****/
 void setup() {
   // put your setup code here, to run once:
@@ -85,68 +84,92 @@ void setup() {
   myServo.attach(servopin);
   myServo.write(initpos);
 
-  /*****Initialize MPU9250*****/
+  Wire.setClock(400000);          //Communication with the gyroscope and calibration 
   Wire.begin();
-  delay(2000);
+  delay(250);
+  Wire.beginTransmission(0x68);
+  Wire.write(0x6B);
+  Wire.write(0x00);
+  Wire.endTransmission();
 
-  if (!mpu.setup(0x68)) {  // change to your own address
-    while (1) {
-      Serial.println("MPU connection failed. Please check your connection with `connection_check` example.");
-      delay(5000);
-    }
+  for(RateCalibrationNumber = 0;
+      RateCalibrationNumber < 2000;
+      RateCalibrationNumber++){
+    gyro_signals();
+    RateCalibrationRoll += RateRoll;
+    RateCalibrationPitch += RatePitch;
+    RateCalibrationYaw += RateYaw;
+    delay(1);
   }
+  RateCalibrationRoll /= 2000;
+  RateCalibrationPitch /= 2000;
+  RateCalibrationYaw /= 2000;
+  LoopTimer=micros();
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-  measureRelAngle();
-  
-  switch (count){
-    case 1:
-      if (refAngle == yawAngle){
-        count = 2;
-        break;
-      }
-    case 2:
-      delay(5);
-      cm = sonar.ping_cm();
-//      Serial.print("Distance = ");
-//      Serial.println(cm);
-      
-      if(cm >= 15){
-        forward();
-      }
-      else if(cm <15){
-        stop();
-        count = 3;
-        break;
-      }
-    case 3:
-      Serial.print("RelAngle = ");
-      Serial.print(relAngle);
-      Serial.print("  -  Count = ");
-      Serial.println(count);
-  }
-  
-  
+  gyro_signals();
+
+//  Serial.print("Acceleration X [g]- ");         //Check the measured acceleration values
+//  Serial.print(AccX);
+//  Serial.print(" Acceleration Y [g]- ");
+//  Serial.print(AccY);
+//  Serial.print(" Acceleration Z [g]- ");
+//  Serial.println(AccZ);
+
+  Serial.print("Yaw angle [°]= ");         //Check the measured roll and pitch angles
+  Serial.print(AngleYaw);
+  Serial.print(" Roll angle [°]= ");         
+  Serial.print(AngleRoll);
+  Serial.print(" Pitch angle [°]= ");
+  Serial.println(AnglePitch);
 }
 
-float measureRelAngle(){
-  if (mpu.update()) {
-    static uint32_t prev_ms = millis();
-    if (millis() > prev_ms + 25) {
-      yawAngle = mpu.getYaw();
-      prev_ms = millis();
+void gyro_signals(void){
+  Wire.beginTransmission(0x68);         //Switch on the low-pass filter
+  Wire.write(0x1A);
+  Wire.write(0x05);
+  Wire.endTransmission();
 
-      if (prev_ms > 15000 && prev_ms < 15050){          // wait for 15s to save initial angle
-        refAngle = yawAngle;
-//        Serial.print("Reference Angle: ");
-//        Serial.print(refAngle, 2);
-      }
+  Wire.beginTransmission(0x68);         //Configure the accelerometer output
+  Wire.write(0x1C);
+  Wire.write(0x10);
+  Wire.endTransmission();
 
-      relAngle = refAngle - yawAngle;
-//      Serial.print("Relative Angle ");
-//      Serial.println(relAngle,2);
-    }
-  }
+  Wire.beginTransmission(0x68);         //Pull the accelerometer measurements from the sensor
+  Wire.write(0x3B);
+  Wire.endTransmission();
+  Wire.requestFrom(0x68,6);
+  int16_t AccXLSB = Wire.read()<<8 | Wire.read();
+  int16_t AccYLSB = Wire.read()<<8 | Wire.read();
+  int16_t AccZLSB = Wire.read()<<8 | Wire.read();
+
+  Wire.beginTransmission(0x68);         //Configure the gyroscope output and pull rotation rate measurements from the sensor
+  Wire.write(0x1B);
+  Wire.write(0x8);
+  Wire.endTransmission();
+  Wire.beginTransmission(0x68);
+  Wire.write(0x43);
+  Wire.endTransmission();
+  Wire.requestFrom(0x68,6);
+  int16_t GyroX = Wire.read()<<8 | Wire.read();
+  int16_t GyroY = Wire.read()<<8 | Wire.read();
+  int16_t GyroZ = Wire.read()<<8 | Wire.read();
+  RateRoll = (float)GyroX/65.5;
+  RatePitch = (float)GyroY/65.5;
+  RateYaw = (float)GyroZ/65.5;
+
+  // x: right is -, left is +
+  // y: front is -, back is +
+  // z: up is -, down is +
+  AccX = (float)AccXLSB/4096+Xoffset;         //Convert the measurements to physical values
+  AccY = (float)AccYLSB/4096+Yoffset;         //Zero offset calibration can be done here
+  AccZ = (float)AccZLSB/4096+Zoffset;
+
+  //Calculate the absolute angles
+  AngleRoll = atan(AccY / sqrt(AccX*AccX + AccZ*AccZ)) * 1/(3.142/180);         
+  AnglePitch = atan(AccX / sqrt(AccY*AccY + AccZ*AccZ)) * 1/(3.142/180);
+  //AngleYaw = atan(sqrt(AccY*AccY + AccX*AccX) / AccZ) * 1/(3.142/180);
+  AngleYaw = atan(-AccX / sqrt(AccY*AccY + AccZ*AccZ)) * 1/(3.142/180);
 }
